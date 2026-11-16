@@ -74,6 +74,8 @@ Sync asset data directly from [ScopeSentry](https://github.com/Autumn-27/ScopeSe
 
 > Requires a **PostgreSQL** database; exploration requires an **LLM** (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, which can also be configured in the UI).
 
+> Deploying to Railway (or another PaaS that builds this repo itself)? Follow **[DEPLOY-RAILWAY.md](DEPLOY-RAILWAY.md)** — it lists the required database/volume/port setup and every build failure we already hit.
+
 ### Option 1: one-click install script (recommended)
 
 ```bash
