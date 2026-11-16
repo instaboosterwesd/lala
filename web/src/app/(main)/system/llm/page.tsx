@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  KeyRoundIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -30,6 +31,7 @@ import { api } from "@/lib/api";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { BulkKeysDialog } from "./_components/bulk-keys";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // The thinking switch (thinking.type) and the thinking effort (reasoning_effort) are two [independent] fields,
@@ -814,6 +816,7 @@ export default function LLMPage() {
   // from "Edit X" to "New". editing = null means create.
   const [editOpen, setEditOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<LLMProfile | null>(null);
+  const [bulkOpen, setBulkOpen] = React.useState(false);
   const openEditor = React.useCallback((p: LLMProfile | null) => {
     setEditing(p);
     setEditOpen(true);
@@ -890,6 +893,9 @@ export default function LLMPage() {
                 On
               </Badge>
             )}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
+            <KeyRoundIcon /> Paste keys
           </Button>
           <Button size="sm" variant="outline" onClick={() => openEditor(null)}>
             <PlusIcon /> Create
@@ -1005,6 +1011,13 @@ export default function LLMPage() {
       </Tabs>
 
       <ProfileSheet profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
+      <BulkKeysDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        profiles={profiles}
+        poolEnabled={poolOn}
+        onSaved={load}
+      />
       <PoolSheet open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
     </div>
   );
