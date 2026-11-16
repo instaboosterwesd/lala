@@ -1,16 +1,40 @@
 # syntax=docker/dockerfile:1
 #
-# Runtime image (no compilation inside the image): install common tools only and ship
-# a **pre-built Linux single binary**. The binary is cross-compiled by the CI binaries
-# job (pure Go, no QEMU) and placed at dist/<TARGETARCH>/artex in the build context.
-# This way multi-arch builds only need to emulate the apt layer for arm64 instead of
-# emulating the Next/Go compilation, which is much faster.
+# Multi-stage image: the frontend static export and the Go binary are compiled inside
+# the image, so `docker build .` works straight from a git checkout with no prebuilt
+# artifacts (needed for hosts that build the repo themselves, e.g. Railway).
 #
-# To build the image manually, prepare the binary yourself first:
-#   cd web && npm run build:static && cd ..
-#   cp -r web/out server/webui/dist
-#   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui -o dist/amd64/artex ./cmd/artex
-#   docker build -t artex:local .
+#   stage ① web    -> Next.js static export (web/out), Node 22 as in CI
+#   stage ② build  -> Go single binary with the UI embedded (-tags embedui)
+#   stage ③ runtime-> tools only, no compilation; ships the binary from stage ②
+#
+# To build locally:  docker build -t artex:local .
+FROM node:22-bookworm-slim AS web
+WORKDIR /src/web
+# Dependencies first, so this layer stays cached when only app code changes.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build:static
+
+FROM golang:1.26-bookworm AS build
+ARG TARGETARCH
+ARG ARTEX_VERSION=docker
+WORKDIR /src
+# Module cache first, for the same reason.
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# server/webui_embed.go embeds all:webui/dist — feed it the freshly exported UI.
+COPY --from=web /src/web/out ./server/webui/dist
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH:-amd64}" \
+    go build \
+      -tags embedui \
+      -trimpath \
+      -ldflags "-s -w -buildid= -X main.version=${ARTEX_VERSION}" \
+      -o /out/artex \
+      ./cmd/artex
+
 FROM python:3.12-slim-bookworm
 ARG TARGETARCH
 # Common tools: ripgrep / curl / vim, plus a set of recon staples (add/remove as needed).
@@ -83,8 +107,8 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-# pre-built binary for the matching architecture (dist/amd64/artex or dist/arm64/artex)
-COPY dist/${TARGETARCH}/artex /app/artex
+# The binary built in stage ② (UI already embedded), so no prebuilt dist/ is required.
+COPY --from=build /out/artex /app/artex
 # Daemon startup script: relaunches the process after a crash and forwards SIGTERM
 # to artex — docker stop only signals PID 1; without forwarding, artex never receives it,
 # cannot shut down gracefully, and is hard-killed by SIGKILL after 10 seconds.
@@ -92,7 +116,10 @@ COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
 # persistence point for data/ (SQLite + jwt.key)
-VOLUME ["/app/data"]
+# NOTE: the Docker VOLUME instruction is intentionally not used here — Railway rejects it
+# ("dockerfile invalid: docker VOLUME ... is not supported"). The directory is created
+# instead; mount a Railway Volume (or ./data via docker-compose) at /app/data to persist it.
+RUN mkdir -p /app/data
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/start.sh"]
 CMD ["-addr", ":8787", "-proxy", ":8788"]
