@@ -99,10 +99,24 @@ function providerSubtitle(p: OcProvider): string {
   return `${p.service}.open-connector`;
 }
 
+// /oc-api/* belongs to the Open Connector runtime, proxied by scripts/artex-gateway.js. When
+// that gateway is not part of the deployment the request falls through to the SPA fallback and
+// comes back as index.html, so json() threw "Unexpected token '<', <!DOCTYPE ...". Fail with a
+// message that names the real cause; the page then shows its "runtime offline" state.
+async function ocJson<T>(res: Response, path: string): Promise<T> {
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("application/json")) {
+    throw new Error(
+      `Open Connector runtime is not available on this server (${path} returned ${res.status} ${type || "no content-type"}; the /oc-api gateway is not deployed)`,
+    );
+  }
+  return (await res.json()) as T;
+}
+
 async function ocGet<T>(path: string): Promise<T> {
   const res = await fetch(`${OC_API}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
-  return (await res.json()) as T;
+  return ocJson<T>(res, path);
 }
 
 async function ocPut(path: string, body: unknown): Promise<void> {

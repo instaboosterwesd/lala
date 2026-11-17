@@ -17,10 +17,25 @@ export type BrowserTab = {
 
 const BRIDGE = "/browser-bridge";
 
+// /browser-bridge/* is served by the standalone gateway (scripts/artex-gateway.js) that fronts
+// the browser runtime, not by the Go server. On a deployment without that gateway the path
+// falls through to the SPA fallback, which answers 200 with index.html — parsing that as JSON
+// produced a bare "Unexpected token '<', <!DOCTYPE ..." in the console. Detect it and say what
+// is actually wrong instead.
+async function bridgeJson<T>(res: Response, path: string): Promise<T> {
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("application/json")) {
+    throw new Error(
+      `Live browser runtime is not available on this server (${path} returned ${res.status} ${type || "no content-type"}; the /browser-bridge gateway is not deployed)`,
+    );
+  }
+  return (await res.json()) as T;
+}
+
 async function bridgeGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BRIDGE}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<T>;
+  return bridgeJson<T>(res, path);
 }
 
 async function bridgePost<T>(path: string, body: unknown): Promise<T> {
@@ -30,7 +45,7 @@ async function bridgePost<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<T>;
+  return bridgeJson<T>(res, path);
 }
 
 /** Open Browser control + tab strip + clickable live page view under the chat composer. */
