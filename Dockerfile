@@ -42,6 +42,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+      xvfb \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -106,6 +107,12 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
+# The browser bridge spawns a system Chrome; point that path at the Chromium Playwright just
+# installed instead of pulling a second browser.
+RUN set -eux; \
+    chrome="$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"; \
+    ln -sf "$chrome" /usr/bin/google-chrome-stable; \
+    "$chrome" --version
 WORKDIR /app
 # The binary built in stage ② (UI already embedded), so no prebuilt dist/ is required.
 COPY --from=build /out/artex /app/artex
@@ -115,6 +122,13 @@ COPY --from=build /out/artex /app/artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
+# Live-browser stack (ARTEX_STACK=1): the bridge serves /browser-bridge (tabs + screenshots) and
+# the gateway puts /api, /browser-bridge and /oc-api on one origin. Both need their own Node deps.
+COPY scripts/package.json scripts/package-lock.json /app/scripts/
+RUN cd /app/scripts && npm ci --omit=dev --no-audit --no-fund
+COPY scripts/artex-gateway.js scripts/browser-bridge.js /app/scripts/
+COPY start-stack.sh /app/start-stack.sh
+RUN chmod +x /app/start-stack.sh
 # persistence point for data/ (SQLite + jwt.key)
 # NOTE: the Docker VOLUME instruction is intentionally not used here — Railway rejects it
 # ("dockerfile invalid: docker VOLUME ... is not supported"). The directory is created

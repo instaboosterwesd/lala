@@ -13,7 +13,7 @@ Names used below are the real ones; replace them if the service is renamed.
 | Database | `Postgres` (Railway Postgres plugin) |
 | Volume | `lala-volume` → `/app/data` |
 | Public URL | https://lala-production-70e340c2.up.railway.app |
-| Target port | `8787` |
+| Target port | `8790` (gateway) — `8787` only when `ARTEX_STACK` is off |
 
 ---
 
@@ -27,9 +27,10 @@ Nothing optional here — miss one and the app either fails to build or crash-lo
 2. **Volume at `/app/data`.** Holds SQLite leftovers, `jwt.key` and task artifacts. Without a
    volume those are lost on every redeploy. Mount it on `/app/data` — note that the image no
    longer declares a Docker `VOLUME` (Railway rejects that instruction).
-3. **Domain with target port `8787`.** The binary listens on `:8787` (and the traffic proxy
-   on `8788`). A domain whose target port is unset returns **502 "Application failed to
-   respond"**.
+3. **Domain with a target port that has a listener.** The binary listens on `:8787` (traffic
+   proxy `8788`); with the browser stack enabled (`ARTEX_STACK=1`) the gateway listens on
+   `:8790` and must be the target port. A domain whose target port is unset returns **502
+   "Application failed to respond"**.
 4. **An active LLM profile.** Not needed to boot, but chat answers
    `No LLM configured yet` until one exists and is activated.
 5. **An admin password** set once through `/setup`.
@@ -93,6 +94,7 @@ Rules that keep it building:
 | --- | --- | --- |
 | `ARTEX_PG_DSN` | yes | `${{Postgres.DATABASE_URL}}` (private network; no public proxy needed) |
 | `PORT` | no | Not read — the app binds `:8787` via `CMD`. Set the domain target port instead. |
+| `ARTEX_STACK` | no | `1` adds Xvfb + browser bridge + gateway (`start-stack.sh`). Needs target port `8790`. |
 | `ARTEX_LLM_PROVIDER` | no | `anthropic` / `openai` / `openai-responses` / `ollama`. Only for the env-driven single-provider mode; LLM profiles in the UI are the normal path and take precedence. |
 | `ARTEX_LLM_MODEL`, `ARTEX_LLM_BASE_URL`, `ARTEX_LLM_PROXY` | no | Same env mode as above. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | no | Only for the env mode. Prefer UI profiles. |
@@ -123,6 +125,43 @@ Open **System → LLM → Paste keys**. One paste accepts keys from both provide
   fail with `HTTP 400 "Please pass a valid API key"`. Use the `AIza…` key from AI Studio.
 - If a key tests as 400/403 although the key looks right, enable the *Generative Language
   API* for that key's project in the AI Studio console.
+
+## 5b. Live browser panel and Connections (optional stack)
+
+The chat's **Open Browser** panel and the Connections page do not talk to ARTEX directly: they
+call `/browser-bridge/*` (tabs + screenshots) and `/oc-api/*` (Open Connector), which only the
+Node front door `scripts/artex-gateway.js` serves. Running just the Go binary makes those paths
+fall through to the SPA fallback, which is why the UI reports
+*"Live browser runtime is not available on this server"*.
+
+Set `ARTEX_STACK=1` on the service to run the whole stack in the same container:
+
+| Process | Port | Purpose |
+| --- | --- | --- |
+| `Xvfb :99` | — | virtual display for the headed Chrome the bridge drives |
+| `artex` | 8787 | Go server + embedded UI (unchanged) |
+| `scripts/browser-bridge.js` | 9223 | tab list / open / close / screenshots, Chrome CDP on 9222 |
+| `scripts/artex-gateway.js` | 8790 | front door: `/api` → artex, `/browser-bridge` → bridge, `/oc-api` → connector |
+
+Then point the domain at the gateway:
+
+```bash
+railway variable set -s lala ARTEX_STACK=1      # triggers a redeploy
+railway domain update https://<domain> --port 8790
+```
+
+Notes:
+
+- The image already carries Chromium (Playwright) and symlinks it to
+  `/usr/bin/google-chrome-stable`; `xvfb` is installed for the headed browser.
+- Gateway `/` answers **302 → /setup**; an already-initialised install continues to /login.
+- Chrome + Xvfb need roughly 0.5–1 GB on top of the Go server. OOM-killed containers show up as
+  restarts with no application log — raise the service memory.
+- **Open Connector is still a separate runtime.** `/oc-api` returns 502 until something listens on
+  `:3000` (upstream `oomol-lab/open-connector`, see `scripts/start-open-connector.sh`); the
+  Connections page then shows its "runtime offline" state instead of failing.
+- Turning the stack off (`ARTEX_STACK=0`/unset) restores the plain single-process image — set the
+  target port back to `8787` when you do.
 
 ## 6. Admin password
 
@@ -167,6 +206,7 @@ First `railway ssh` on a fresh machine needs a key: `ssh-keygen -t ed25519 -N ""
 | **502** `Application failed to respond` | domain target port unset/wrong | `railway domain update <domain> --port 8787` |
 | Crash loop: `open stores: no database config found` | no `ARTEX_PG_DSN` | add the Postgres service + reference variable |
 | `No LLM configured yet: go to System → LLM Profiles` | no profile, or none active | add keys via **Paste keys**, or press **Set as active** |
+| `Live browser runtime is not available on this server` / `Open Connector runtime is not available` | `ARTEX_STACK` off, or the domain points at `8787` instead of the gateway `8790` | enable the stack and retarget the domain (section 5b) |
 | `[llm-test] … HTTP 400 "Please pass a valid API key"` | wrong key type (e.g. `AQ.…`) or API not enabled | use the `AIza…` key / enable the API |
 | Chat fails, logs show `429` | key rate-limited / out of credit | expected: pool trips it and the next profile takes over; check **Pool settings** is on |
 | Data gone after a redeploy | no volume, or wrong mount path | volume must mount `/app/data` |

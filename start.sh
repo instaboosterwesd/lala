@@ -20,6 +20,12 @@ if [ -f .env ]; then
 	set +a
 fi
 
+# Optional sidecar stack (Xvfb + browser bridge + gateway) for deployments that need the live
+# browser panel. Off by default so docker compose keeps running ARTEX on 8787 directly.
+if [ "${ARTEX_STACK:-0}" = "1" ] && [ -x ./start-stack.sh ]; then
+	exec ./start-stack.sh "$@"
+fi
+
 BIN=./artex
 [ -x "$BIN" ] || { echo "[artex] executable $BIN not found" >&2; exit 1; }
 
