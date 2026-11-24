@@ -94,7 +94,7 @@ Rules that keep it building:
 | --- | --- | --- |
 | `ARTEX_PG_DSN` | yes | `${{Postgres.DATABASE_URL}}` (private network; no public proxy needed) |
 | `PORT` | no | Not read — the app binds `:8787` via `CMD`. Set the domain target port instead. |
-| `ARTEX_STACK` | no | `1` adds Xvfb + browser bridge + gateway (`start-stack.sh`). Needs target port `8790`. |
+| `ARTEX_STACK` | no | `1` adds the browser bridge + gateway (`start-stack.sh`). Needs target port `8790`. |
 | `ARTEX_LLM_PROVIDER` | no | `anthropic` / `openai` / `openai-responses` / `ollama`. Only for the env-driven single-provider mode; LLM profiles in the UI are the normal path and take precedence. |
 | `ARTEX_LLM_MODEL`, `ARTEX_LLM_BASE_URL`, `ARTEX_LLM_PROXY` | no | Same env mode as above. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | no | Only for the env mode. Prefer UI profiles. |
@@ -138,7 +138,6 @@ Set `ARTEX_STACK=1` on the service to run the whole stack in the same container:
 
 | Process | Port | Purpose |
 | --- | --- | --- |
-| `Xvfb :99` | — | virtual display for the headed Chrome the bridge drives |
 | `artex` | 8787 | Go server + embedded UI (unchanged) |
 | `scripts/browser-bridge.js` | 9223 | tab list / open / close / screenshots, Chrome CDP on 9222 |
 | `scripts/artex-gateway.js` | 8790 | front door: `/api` → artex, `/browser-bridge` → bridge, `/oc-api` → connector |
@@ -152,11 +151,16 @@ railway domain update https://<domain> --port 8790
 
 Notes:
 
-- The image already carries Chromium (Playwright) and symlinks it to
-  `/usr/bin/google-chrome-stable`; `xvfb` is installed for the headed browser.
+- The image already carries Chromium (Playwright) and wraps it at
+  `/usr/bin/google-chrome-stable` so the bridge launches it **headless**
+  (`--headless=new`). No X server is installed: CDP screenshots are identical and the image
+  builds without the `xvfb` package (installing it made the build fail).
+- The Chrome path is resolved through Playwright's own API at build time with a `find`
+  fallback — do not hard-code a `/root/.cache/ms-playwright/...` glob, it does not exist in
+  this image and the build dies on an empty variable.
 - Gateway `/` answers **302 → /setup**; an already-initialised install continues to /login.
-- Chrome + Xvfb need roughly 0.5–1 GB on top of the Go server. OOM-killed containers show up as
-  restarts with no application log — raise the service memory.
+- Headless Chrome needs roughly 0.5–1 GB on top of the Go server. OOM-killed containers show up
+  as restarts with no application log — raise the service memory.
 - **Open Connector is still a separate runtime.** `/oc-api` returns 502 until something listens on
   `:3000` (upstream `oomol-lab/open-connector`, see `scripts/start-open-connector.sh`); the
   Connections page then shows its "runtime offline" state instead of failing.
