@@ -65,6 +65,12 @@ type Config struct {
 	// losing live progress / live token counts during the run. Mapped to
 	// agentcore.Options.NonStreaming = !Stream.
 	Stream bool
+	// CodexToken, when set, marks this profile as a ChatGPT (Codex) subscription
+	// endpoint: every request is then stamped with the current OAuth access token,
+	// the ChatGPT account id and the Codex client headers the backend expects.
+	// The function is called per request so a refreshed token is picked up without
+	// rebuilding the provider. Nil for ordinary API-key endpoints.
+	CodexToken func(ctx context.Context) (accessToken, accountID string, err error)
 	// MaxTokens is the per-reply output cap (tokens). 0 = don't send the field and let
 	// the server default decide (historical behavior). Unlike ContextWindowK, which is
 	// the model's total capacity used only locally to size compaction thresholds and
@@ -330,7 +336,7 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.CodexToken)
 	if err != nil {
 		return nil, err
 	}
@@ -428,9 +434,30 @@ type quotaAwareTransport struct {
 	// carries; its value is the session id read from the request context. Empty
 	// disables it. See Config.SessionHeaderKey.
 	sessionHeaderKey string
+	// codexToken, when set, supplies the ChatGPT OAuth credentials stamped on
+	// requests to the ChatGPT backend. See Config.CodexToken.
+	codexToken func(ctx context.Context) (string, string, error)
 }
 
 func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.codexToken != nil && isChatGPTBackend(req.URL.Host) {
+		token, accountID, err := t.codexToken(req.Context())
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if accountID != "" {
+			req.Header.Set("chatgpt-account-id", accountID)
+		}
+		// The backend only serves the Codex client contract: these markers are
+		// what it accepts a subscription token for.
+		req.Header.Set("originator", "codex_cli_rs")
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+		req.Header.Set("User-Agent", "codex_cli_rs/0.0.1")
+		if sid := transcript.SessionIDFrom(req.Context()); sid != "" {
+			req.Header.Set("session_id", sid)
+		}
+	}
 	// Custom session-id header: name is user-configured, value is THIS run's
 	// session id (norma stashes it on the context via transcript.WithSessionID).
 	// Stable across a session's turns and distinct across sessions — exactly what
@@ -492,7 +519,14 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+// isChatGPTBackend reports whether a request targets the ChatGPT subscription
+// backend, which authenticates with OAuth headers instead of a plain API key.
+func isChatGPTBackend(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == "chatgpt.com" || strings.HasSuffix(host, ".chatgpt.com")
+}
+
+func quotaAwareHTTPClient(proxy, sessionHeaderKey string, codexToken func(ctx context.Context) (string, string, error)) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
@@ -511,7 +545,7 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), codexToken: codexToken}}, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a

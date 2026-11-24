@@ -22,6 +22,8 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
+  ChatGPTDeviceCode,
+  ChatGPTStatus,
   CommandRecord,
   Company,
   CompanyScopeMutation,
@@ -964,6 +966,16 @@ export const api = {
       session_header_key,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
+  // ChatGPT subscription sign-in (device code): status, start a login, poll it,
+  // disconnect. Connecting also creates/activates the ChatGPT LLM profile.
+  chatGPTStatus: () => get<ChatGPTStatus>("/chatgpt/status"),
+  chatGPTStart: () => post<ChatGPTDeviceCode>("/chatgpt/device/start", {}),
+  chatGPTPoll: (deviceAuthID: string, userCode: string) =>
+    post<ChatGPTStatus & { status?: string }>("/chatgpt/device/poll", {
+      device_auth_id: deviceAuthID,
+      user_code: userCode,
+    }),
+  chatGPTDisconnect: () => post<{ ok: boolean }>("/chatgpt/disconnect", {}),
   saveLLMProfile: (p: {
     id?: number; // omit/0 = create; set = update that profile
     name: string;

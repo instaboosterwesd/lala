@@ -32,6 +32,7 @@ import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from 
 import { cn } from "@/lib/utils";
 
 import { BulkKeysDialog } from "./_components/bulk-keys";
+import { ChatGPTConnect } from "./_components/chatgpt-connect";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // The thinking switch (thinking.type) and the thinking effort (reasoning_effort) are two [independent] fields,
@@ -822,6 +823,10 @@ export default function LLMPage() {
     setEditOpen(true);
   }, []);
 
+  // API-key providers are the advanced path now that ChatGPT sign-in exists, so
+  // their cards start collapsed.
+  const [showProviders, setShowProviders] = React.useState(false);
+
   const loadPool = React.useCallback(async () => {
     try {
       setPool(await api.llmPool());
@@ -903,6 +908,8 @@ export default function LLMPage() {
         </div>
       </div>
 
+      <ChatGPTConnect onChanged={load} />
+
       <Tabs defaultValue="profiles" className="flex-1">
         <TabsList>
           <TabsTrigger value="profiles">Model profiles</TabsTrigger>
@@ -910,7 +917,15 @@ export default function LLMPage() {
         </TabsList>
 
         <TabsContent value="profiles" className="mt-4">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-muted-foreground text-xs">
+              API-key providers: {profiles.length}. The ChatGPT card above works without any key.
+            </p>
+            <Button size="sm" variant="ghost" onClick={() => setShowProviders((v) => !v)}>
+              {showProviders ? "Hide" : "Show"} providers
+            </Button>
+          </div>
+          <div className={cn("grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3", !showProviders && "hidden")}>
             {profiles.map((p) => {
               const h = healthOf(p, health.get(p.id));
               return (
