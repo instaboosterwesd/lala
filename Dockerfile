@@ -110,7 +110,11 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
 # instead of pulling a second browser. Headless on purpose: it costs no X server, and CDP
 # screenshots work the same, which is all the chat panel needs.
 RUN set -eux; \
-    chrome="$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"; \
+    chrome="$(node -e "const cp=require('child_process');const root=cp.execSync('npm root -g').toString().trim();const pw=require(root+'/playwright');process.stdout.write(pw.chromium.executablePath())" 2>/dev/null || true)"; \
+    if [ -z "$chrome" ] || [ ! -x "$chrome" ]; then \
+      chrome="$(find / -type f \( -name chrome -o -name headless_shell \) -path '*chrome-linux*' 2>/dev/null | head -n1)"; \
+    fi; \
+    echo "chrome=$chrome"; test -n "$chrome"; test -x "$chrome"; \
     ln -sf "$chrome" /usr/local/bin/artex-chrome; \
     printf '#!/bin/sh\nexec /usr/local/bin/artex-chrome --headless=new --disable-dev-shm-usage "$@"\n' > /usr/bin/google-chrome-stable; \
     chmod +x /usr/bin/google-chrome-stable; \
