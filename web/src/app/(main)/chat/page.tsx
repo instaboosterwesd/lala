@@ -8,6 +8,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   HistoryIcon,
+  KeyRoundIcon,
   ListChecksIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -23,6 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { BulkKeysDialog } from "@/app/(main)/system/llm/_components/bulk-keys";
 import { ChatBrowserDock } from "@/components/chat-browser-panel";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
@@ -287,14 +289,19 @@ function LLMProfileRow({
   onChange,
   disabled,
   rightSlot,
+  onProfilesChanged,
 }: {
   profiles: LLMProfile[];
   selected: number | null;
   onChange: (id: number | null) => void;
   disabled?: boolean;
   rightSlot?: React.ReactNode;
+  // Called after the inline "connect a provider" dialog created profiles, so the parent can
+  // refetch the list and the new models show up in the picker without a page reload.
+  onProfilesChanged?: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
+  const [connectOpen, setConnectOpen] = React.useState(false);
   const activeDefault = profiles.find((p) => p.is_default);
   const current = selected != null ? profiles.find((p) => Number(p.id) === selected) : null;
   const label = current ? current.name : `Default${activeDefault ? ` (${activeDefault.name})` : ""}`;
@@ -356,9 +363,28 @@ function LLMProfileRow({
               </span>
             </button>
           ))}
+          {/* Providers are connected from here too, so a fresh install can go from "no LLM"
+              to a working chat without leaving the conversation. */}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              setConnectOpen(true);
+            }}
+            className="mt-1 flex w-full items-center gap-1.5 rounded border-t px-2 py-1.5 text-left text-xs hover:bg-accent"
+          >
+            <KeyRoundIcon className="size-3.5 shrink-0" /> Connect a provider (paste keys)
+          </button>
         </PopoverContent>
       </Popover>
       {rightSlot}
+      <BulkKeysDialog
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        profiles={profiles}
+        poolEnabled={false}
+        onSaved={() => onProfilesChanged?.()}
+      />
     </div>
   );
 }
@@ -371,10 +397,12 @@ function DraftChat({
   agents,
   profiles,
   onStarted,
+  onProfilesChanged,
 }: {
   agents: Agent[];
   profiles: LLMProfile[];
   onStarted: (c: Conversation, pending?: { input?: string; attachments?: ChatAttachment[] }) => void;
+  onProfilesChanged?: () => void;
 }) {
   const [agentKey, setAgentKey] = React.useState("");
   const [llmProfileId, setLlmProfileId] = React.useState<number | null>(null);
@@ -476,6 +504,7 @@ function DraftChat({
         selected={llmProfileId}
         onChange={setLlmProfileId}
         disabled={sending || uploading}
+        onProfilesChanged={onProfilesChanged}
       />
     </>
   );
@@ -491,10 +520,12 @@ function ChatView({
   initial,
   onTitleMaybeChanged,
   onConvUpdated,
+  onProfilesChanged,
 }: {
   conv: Conversation;
   agents: Agent[];
   profiles: LLMProfile[];
+  onProfilesChanged?: () => void;
   // pending text + already-uploaded attachments handed off from a draft that
   // created this conversation via the paperclip (consumed once, on mount).
   initial?: { input?: string; attachments?: ChatAttachment[] };
@@ -614,14 +645,23 @@ function ChatView({
     };
   }, [running, conv.id, onTitleMaybeChanged]);
 
-  const loadFocusPage = React.useCallback((before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE), [conv.id]);
+  const loadFocusPage = React.useCallback(
+    (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),
+    [conv.id],
+  );
   const mergeFocusPage = React.useCallback((page: { items: Activity[]; hasMore: boolean }) => {
     setMessages((prev) => mergeActivities(page.items, prev));
     earliestRef.current = page.items[0]?.seq ?? earliestRef.current;
     hasMoreRef.current = page.hasMore;
     setHasMore(page.hasMore);
   }, []);
-  const focusHistory = useApprovalHistory(approvalFocus.state?.source, historyLoaded, messages, loadFocusPage, mergeFocusPage);
+  const focusHistory = useApprovalHistory(
+    approvalFocus.state?.source,
+    historyLoaded,
+    messages,
+    loadFocusPage,
+    mergeFocusPage,
+  );
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -809,9 +849,17 @@ function ChatView({
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">Scroll up to load earlier messages…</div>
+                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">
+                  Scroll up to load earlier messages…
+                </div>
               )}
-              <Transcript activity={messages} live={running} chat fetchDetail={fetchDetail} focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined} />
+              <Transcript
+                activity={messages}
+                live={running}
+                chat
+                fetchDetail={fetchDetail}
+                focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined}
+              />
             </>
           )}
         </div>
@@ -823,7 +871,11 @@ function ChatView({
         onSend={send}
         disabled={running || sending}
         allowBtw
-        placeholder={running ? "Agent is replying; type /btw to ask a side question…" : "Type a message, @ to reference records, Enter to send"}
+        placeholder={
+          running
+            ? "Agent is replying; type /btw to ask a side question…"
+            : "Type a message, @ to reference records, Enter to send"
+        }
         running={running}
         onStop={stop}
         stopDisabled={stopping}
@@ -839,6 +891,7 @@ function ChatView({
         onChange={changeProfile}
         disabled={running || sending}
         rightSlot={<TodoPopover seq={latestTodoSeq} fetchDetail={fetchDetail} />}
+        onProfilesChanged={onProfilesChanged}
       />
     </SideQuestionWorkspace>
   );
@@ -1061,16 +1114,19 @@ export default function ChatPage() {
   const [historyOpen, setHistoryOpen] = React.useState(true);
   const [sourceRequested, setSourceRequested] = React.useState(false);
   const [convsLoaded, setConvsLoaded] = React.useState(false);
-  const selectConversation = React.useCallback((id: number | null) => {
-    if (id !== selectedId) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("approval");
-      setSourceRequested(false);
-      window.history.replaceState(null, "", url);
-    }
-    setSelectedId(id);
-    setHistoryOpen(false);
-  }, [selectedId]);
+  const selectConversation = React.useCallback(
+    (id: number | null) => {
+      if (id !== selectedId) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("approval");
+        setSourceRequested(false);
+        window.history.replaceState(null, "", url);
+      }
+      setSelectedId(id);
+      setHistoryOpen(false);
+    },
+    [selectedId],
+  );
   const openHistory = React.useCallback(() => setHistoryOpen(true), []);
 
   const [renamingId, setRenamingId] = React.useState<number | null>(null);
@@ -1098,12 +1154,15 @@ export default function ChatPage() {
     const seq = ++conversationListSeq.current;
     try {
       const items = await api.conversations();
-      if (seq === conversationListSeq.current) { setConvs(items); setConvsLoaded(true); }
+      if (seq === conversationListSeq.current) {
+        setConvs(items);
+        setConvsLoaded(true);
+      }
     } catch {
       // Preserve the selected transcript and list on a transient poll failure.
     }
   }, []);
-  React.useEffect(() => {
+  const reloadProfiles = React.useCallback(() => {
     api
       .llmProfiles()
       .then(setProfiles)
@@ -1111,6 +1170,9 @@ export default function ChatPage() {
         /* The conversation remains usable without profile labels. */
       });
   }, []);
+  React.useEffect(() => {
+    reloadProfiles();
+  }, [reloadProfiles]);
 
   // Clear sidebar agent filter if that agent was deleted live.
   React.useEffect(() => {
@@ -1428,7 +1490,11 @@ export default function ChatPage() {
                 onValueChange={(value) => changeAgentFilter(value === "all" ? null : value.slice(6))}
                 disabled={bulkDeleting}
               >
-                <SelectTrigger size="sm" className="w-[11rem] min-w-0 sm:w-52" aria-label="Filter conversations by agent">
+                <SelectTrigger
+                  size="sm"
+                  className="w-[11rem] min-w-0 sm:w-52"
+                  aria-label="Filter conversations by agent"
+                >
                   <Bot />
                   <SelectValue placeholder="All agents" />
                 </SelectTrigger>
@@ -1558,6 +1624,7 @@ export default function ChatPage() {
               initial={pendingByConv[selected.id]}
               onTitleMaybeChanged={reloadConvs}
               onConvUpdated={reloadConvs}
+              onProfilesChanged={reloadProfiles}
             />
           ) : sourceRequested ? (
             <div role="status" className="p-6 text-sm text-muted-foreground">
@@ -1567,6 +1634,7 @@ export default function ChatPage() {
             <DraftChat
               agents={chatAgents}
               profiles={profiles}
+              onProfilesChanged={reloadProfiles}
               onStarted={(c, pending) => {
                 if (agentFilter !== null && agentFilter !== c.agent_key) changeAgentFilter(null);
                 if (pending) setPendingByConv((p) => ({ ...p, [c.id]: pending }));
@@ -1588,7 +1656,9 @@ export default function ChatPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {selectedConversationCount} selected conversations?</AlertDialogTitle>
-            <AlertDialogDescription>Conversation messages and execution records will be deleted with them. This action cannot be undone.</AlertDialogDescription>
+            <AlertDialogDescription>
+              Conversation messages and execution records will be deleted with them. This action cannot be undone.
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>

@@ -42,7 +42,6 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
-      xvfb \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -107,11 +106,14 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
-# The browser bridge spawns a system Chrome; point that path at the Chromium Playwright just
-# installed instead of pulling a second browser.
+# The browser bridge spawns a system Chrome; wrap the Chromium Playwright already installed
+# instead of pulling a second browser. Headless on purpose: it costs no X server, and CDP
+# screenshots work the same, which is all the chat panel needs.
 RUN set -eux; \
     chrome="$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"; \
-    ln -sf "$chrome" /usr/bin/google-chrome-stable; \
+    ln -sf "$chrome" /usr/local/bin/artex-chrome; \
+    printf '#!/bin/sh\nexec /usr/local/bin/artex-chrome --headless=new --disable-dev-shm-usage "$@"\n' > /usr/bin/google-chrome-stable; \
+    chmod +x /usr/bin/google-chrome-stable; \
     "$chrome" --version
 WORKDIR /app
 # The binary built in stage ② (UI already embedded), so no prebuilt dist/ is required.
