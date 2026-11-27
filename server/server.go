@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/codexauth"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmpool"
@@ -102,10 +101,6 @@ type Server struct {
 	provCacheMu   sync.Mutex
 	provByProfile map[int64]*provEntry
 	provCacheGen  uint64
-	// codexStore holds the ChatGPT subscription sign-in (lazily created); see
-	// server/chatgpt.go and package codexauth.
-	codexMu    sync.Mutex
-	codexStore *codexauth.Store
 
 	// llmHealth is the process-wide circuit-breaker state for LLM failover (failover pool).
 	// It deliberately lives OUTSIDE the provider caches: rebuilding the chain
@@ -339,7 +334,6 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
-	s.applyCodexAuth(&cfg, p)
 	s.applyProfileRetry(&cfg, p)
 	// Ollama profiles run keyless (local server); the other formats need a key.
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
@@ -438,7 +432,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
 	if active, _ := s.m.pg.ActiveProfile(); active != nil {
-		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && sameProviderConfig(activeCfg, cfg) {
+		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
 			prov, _, _ = s.providerForProfile(active.ID)
 		}
 	}
@@ -513,7 +507,6 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
-	s.applyCodexAuth(&cfg, p)
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
 		return cfg, false
@@ -919,16 +912,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/llm/profiles/active", s.pgActivateProfile)
 	mux.HandleFunc("GET /api/llm/retry-policy", s.pgGetLLMRetryPolicy)
 	mux.HandleFunc("POST /api/llm/retry-policy", s.pgSaveLLMRetryPolicy)
-	// ChatGPT subscription sign-in (device code); see server/chatgpt.go
-	mux.HandleFunc("GET /api/chatgpt/status", s.pgChatGPTStatus)
-	mux.HandleFunc("GET /api/chatgpt/models", s.pgChatGPTModels)
-	mux.HandleFunc("POST /api/chatgpt/model", s.pgChatGPTSetModel)
-	mux.HandleFunc("POST /api/chatgpt/device/start", s.pgChatGPTStart)
-	mux.HandleFunc("POST /api/chatgpt/device/poll", s.pgChatGPTPoll)
-	mux.HandleFunc("POST /api/chatgpt/disconnect", s.pgChatGPTDisconnect)
-	// Liquid AI's typed decision endpoint (separate from chat-completion models).
-	mux.HandleFunc("GET /api/liquid/decision-models", s.liquidDecisionModels)
-	mux.HandleFunc("POST /api/liquid/decisions", s.liquidDecisionRun)
 	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
 	mux.HandleFunc("POST /api/llm/pool/reset", s.pgLLMPoolReset)
 	mux.HandleFunc("POST /api/llm/models", s.pgListModels)

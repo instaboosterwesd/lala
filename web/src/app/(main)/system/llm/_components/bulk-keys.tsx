@@ -20,74 +20,24 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { LLMProfile } from "@/lib/types";
 
-// Both gateways speak the OpenAI wire format, so the only per-provider difference is the
-// base URL, the key prefix used to recognise it, and a free default model.
-const PROVIDERS = {
-  openrouter: {
-    label: "OpenRouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    freeModel: "inclusionai/ling-3.2-flash:free",
-    prefixes: ["sk-or-"],
-    keysUrl: "https://openrouter.ai/keys",
-    freeModels: [] as string[],
-    hint: "Free models are the ones priced at 0 on OpenRouter (…:free).",
-  },
-  "google-ai-studio": {
-    label: "Google AI Studio",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    freeModel: "gemini-2.5-flash",
-    prefixes: ["AIza"],
-    keysUrl: "https://aistudio.google.com/apikey",
-    freeModels: [] as string[],
-    hint: "gemini-2.5-flash is on the free tier of the AI Studio API.",
-  },
-  requesty: {
-    label: "Requesty",
-    baseUrl: "https://router.requesty.ai/v1",
-    // The free tier is these five models; every other Requesty model needs credit.
-    freeModel: "nvidia/nemotron-3-ultra-550b-a55b",
-    prefixes: ["rqsty-"],
-    keysUrl: "https://app.requesty.ai/api-keys",
-    freeModels: [
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "nvidia/nemotron-3.5-lightning-30b-a3b",
-      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-      "google/gemma-4-31b-it",
-      "nvidia/muse-glimmer-30b",
-    ],
-    hint: "These five models cost $0. They think first, so a small output cap only returns reasoning — keep the cap generous (≈900+).",
-  },
+// Deploy speaks the OpenAI wire format, so a profile only needs its base URL and a model.
+const PROVIDER = {
+  label: "Deploy",
+  baseUrl: "https://api.deploy.com/api/v1",
+  keysUrl: "https://portal.deploy.com/?api_keys=1",
+  defaultModel: "deepseek-ai/deepseek-v4.1-flash-1017",
+  // Every model on the account; both take tools, which the agent needs.
+  models: ["deepseek-ai/deepseek-v4.1-flash-1017", "zai-org/glm-5.3-flash"],
 } as const;
-
-type ProviderKey = keyof typeof PROVIDERS;
-
-const PROVIDER_KEYS = Object.keys(PROVIDERS) as ProviderKey[];
-
-// Per-provider state maps, built from the list so adding a provider never needs a second edit.
-const defaultModels = (): Record<ProviderKey, string> =>
-  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, PROVIDERS[p].freeModel])) as Record<ProviderKey, string>;
-const emptyBuckets = (): Record<ProviderKey, string[]> =>
-  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, [] as string[]])) as Record<ProviderKey, string[]>;
-const zeroCounters = (): Record<ProviderKey, number> =>
-  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, 1])) as Record<ProviderKey, number>;
-
-// A pasted key is routed by its prefix, so one box can take OpenRouter and AI Studio keys
-// mixed together. Anything unrecognised is reported instead of being saved as a broken
-// profile.
-function detectProvider(key: string): ProviderKey | null {
-  for (const p of PROVIDER_KEYS) {
-    if (PROVIDERS[p].prefixes.some((prefix) => key.startsWith(prefix))) return p;
-  }
-  return null;
-}
 
 // Accept keys separated by newlines, commas, semicolons or spaces (people paste them in
 // every shape) and drop duplicates, so a double paste does not create duplicate profiles.
+// A copied "Authorization: Bearer …" header is tolerated too.
 function parseKeys(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const part of raw.split(/[\s,;]+/)) {
-    const key = part.trim();
+    const key = part.trim().replace(/^Bearer$/i, "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(key);
@@ -95,8 +45,8 @@ function parseKeys(raw: string): string[] {
   return out;
 }
 
-// Profile names must be unique (the database enforces it), so importing the same provider
-// again continues the numbering instead of colliding with "OpenRouter 1".
+// Profile names must be unique (the database enforces it), so importing again continues the
+// numbering instead of colliding with "Deploy 1".
 function uniqueName(label: string, start: number, taken: Set<string>): string {
   let n = start;
   let name = `${label} ${n}`;
@@ -106,33 +56,6 @@ function uniqueName(label: string, start: number, taken: Set<string>): string {
   }
   taken.add(name);
   return name;
-}
-
-type FreeModel = { id: string; ctx: number };
-
-// The OpenRouter catalogue is public and CORS-open, so the free list can be read straight
-// from the browser: pricing both 0 = free, and "tools" support is required for the agent to
-// be able to call anything.
-async function fetchOpenRouterFreeModels(): Promise<FreeModel[]> {
-  const res = await fetch("https://openrouter.ai/api/v1/models");
-  if (!res.ok) throw new Error(`model list HTTP ${res.status}`);
-  const body = (await res.json()) as {
-    data?: {
-      id?: string;
-      pricing?: { prompt?: string; completion?: string };
-      context_length?: number;
-      supported_parameters?: string[];
-    }[];
-  };
-  const free = (body.data ?? []).filter(
-    (m) =>
-      m?.id &&
-      m.pricing?.prompt === "0" &&
-      m.pricing?.completion === "0" &&
-      (m.supported_parameters ?? []).includes("tools"),
-  );
-  free.sort((a, b) => (b.context_length ?? 0) - (a.context_length ?? 0));
-  return free.slice(0, 40).map((m) => ({ id: m.id as string, ctx: m.context_length ?? 0 }));
 }
 
 export function BulkKeysDialog({
@@ -149,83 +72,45 @@ export function BulkKeysDialog({
   onSaved: () => Promise<void> | void;
 }) {
   const [raw, setRaw] = React.useState("");
-  const [models, setModels] = React.useState<Record<ProviderKey, string>>(defaultModels);
-  const [freeModels, setFreeModels] = React.useState<FreeModel[]>([]);
-  const [loadingFree, setLoadingFree] = React.useState(false);
+  const [model, setModel] = React.useState<string>(PROVIDER.defaultModel);
   const [busy, setBusy] = React.useState(false);
 
-  // Reopening starts clean; the free catalogue is fetched once per open (it is cheap).
+  // Reopening starts clean.
   React.useEffect(() => {
     if (!open) return;
     setRaw("");
-    setModels(defaultModels());
+    setModel(PROVIDER.defaultModel);
     setBusy(false);
-    setLoadingFree(true);
-    fetchOpenRouterFreeModels()
-      .then((list) => {
-        setFreeModels(list);
-        // Prefer the catalogue's top free model over the built-in fallback.
-        if (list.length > 0) setModels((prev) => ({ ...prev, openrouter: list[0].id }));
-      })
-      .catch(() => {
-        /* keep the built-in free default */
-      })
-      .finally(() => setLoadingFree(false));
   }, [open]);
 
   const keys = React.useMemo(() => parseKeys(raw), [raw]);
 
-  // One bucket per provider, filled in paste order, plus the keys we could not place.
-  const grouped = React.useMemo(() => {
-    const buckets = emptyBuckets();
-    const unknown: string[] = [];
-    keys.forEach((key, i) => {
-      const p = detectProvider(key);
-      if (p)
-        buckets[p].push(`${i}`); // remember the paste position for the failover order
-      else unknown.push(key);
-    });
-    return { buckets, unknown };
-  }, [keys]);
-
-  const detected = PROVIDER_KEYS.filter((p) => grouped.buckets[p].length > 0);
-  const total = detected.reduce((n, p) => n + grouped.buckets[p].length, 0);
-
   async function importKeys() {
-    if (total === 0 || busy) return;
+    if (keys.length === 0 || busy) return;
     setBusy(true);
     const taken = new Set(profiles.map((p) => p.name));
     const created: { id: string; name: string }[] = [];
     const failed: string[] = [];
     try {
-      // Paste order is failover order: the key pasted first gets the highest priority, so it
-      // leads the chain and an exhausted / rate-limited key hands over to the next one.
-      const order: { provider: ProviderKey; key: string; idx: number }[] = [];
-      for (const p of detected) {
-        for (const idx of grouped.buckets[p]) order.push({ provider: p, key: keys[Number(idx)], idx: Number(idx) });
-      }
-      order.sort((a, b) => a.idx - b.idx);
-
-      const counters = zeroCounters();
-      for (const item of order) {
-        const cfg = PROVIDERS[item.provider];
-        const model = models[item.provider].trim() || cfg.freeModel;
-        const name = uniqueName(cfg.label, counters[item.provider], taken);
-        counters[item.provider]++;
+      // Paste order is failover order: the key pasted first leads the chain and hands over to
+      // the next one when it runs out of credit or gets rate-limited.
+      const name = uniqueName(PROVIDER.label, 1, taken);
+      for (const [i, key] of keys.entries()) {
+        const profileName = i === 0 ? name : uniqueName(PROVIDER.label, 2, taken);
         try {
           const { id } = await api.saveLLMProfile({
-            name,
+            name: profileName,
             format: "openai",
-            model,
-            base_url: cfg.baseUrl,
-            api_key: item.key,
-            priority: order.length - item.idx,
+            model: model.trim() || PROVIDER.defaultModel,
+            base_url: PROVIDER.baseUrl,
+            api_key: key,
+            priority: keys.length - i,
             pool_exclude: false,
             streaming: true,
           });
-          created.push({ id: String(id), name });
+          created.push({ id: String(id), name: profileName });
         } catch (e) {
-          failed.push(`${name}: ${(e as Error).message}`);
+          failed.push(`${profileName}: ${(e as Error).message}`);
         }
       }
 
@@ -278,99 +163,76 @@ export function BulkKeysDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <KeyRoundIcon className="size-4" /> Paste keys
+            <KeyRoundIcon className="size-4" /> Paste Deploy keys
           </DialogTitle>
           <DialogDescription>
-            Paste any mix of keys — each one is recognised by its prefix and saved under the right provider. Every key
-            becomes its own profile in the failover chain, so when one runs out of credit or gets rate-limited the next
-            one takes over.
+            Every key becomes its own profile in the failover chain, so when one runs out of credit or gets rate-limited
+            the next one takes over. Need another key? Use the button below — it opens your Deploy API keys page.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3">
-          {/* One click to the provider's own key page: the user can mint a fresh key without
-              leaving the dialog, then paste it in the box below. */}
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-2.5">
             <span className="text-muted-foreground text-xs">Need a key?</span>
-            {PROVIDER_KEYS.map((p) => (
-              <Button key={p} asChild size="sm" variant="outline">
-                <a href={PROVIDERS[p].keysUrl} target="_blank" rel="noreferrer">
-                  {PROVIDERS[p].label} <ExternalLinkIcon />
-                </a>
-              </Button>
-            ))}
+            <Button asChild size="sm" variant="outline">
+              <a href={PROVIDER.keysUrl} target="_blank" rel="noreferrer">
+                Get Deploy key <ExternalLinkIcon />
+              </a>
+            </Button>
           </div>
+
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
               <Label htmlFor="bulk-keys">API keys</Label>
               <span className="text-muted-foreground text-xs">
-                {total > 0
-                  ? `${total} detected${detected.length > 0 ? ` · ${detected.map((p) => `${PROVIDERS[p].label} ${grouped.buckets[p].length}`).join(", ")}` : ""}`
-                  : "paste OpenRouter (sk-or-…), AI Studio (AIza…) and Requesty (rqsty-…) keys together"}
+                {keys.length > 0 ? `${keys.length} key${keys.length === 1 ? "" : "s"} detected` : "one key per line"}
               </span>
             </div>
             <Textarea
               id="bulk-keys"
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
-              placeholder={"One key per line — mixing providers is fine\nsk-or-v1-…\nAIza…\nrqsty-sk-…"}
+              placeholder={"One key per line\nF7au…=="}
               className="min-h-32 font-mono text-xs"
               spellCheck={false}
               autoComplete="off"
             />
-            {grouped.unknown.length > 0 && (
-              <p className="text-destructive text-xs">
-                {grouped.unknown.length} key{grouped.unknown.length === 1 ? "" : "s"} not recognised (expected sk-or-…,
-                AIza… or rqsty-…): {grouped.unknown.slice(0, 2).join(", ")}
-                {grouped.unknown.length > 2 ? "…" : ""}
-              </p>
-            )}
+            <p className="text-muted-foreground text-xs">
+              Deploy keys have no fixed prefix — everything pasted here is saved as a Deploy key against{" "}
+              <span className="font-mono">{PROVIDER.baseUrl}</span>.
+            </p>
           </div>
 
-          {detected.map((p) => {
-            const cfg = PROVIDERS[p];
-            const listId = `free-models-${p}`;
-            // OpenRouter's catalogue is live-fetched; the static list is the fallback there and
-            // the whole story for Requesty.
-            const modelOptions = p === "openrouter" && freeModels.length > 0 ? freeModels.map((m) => m.id) : cfg.freeModels;
-            return (
-              <div key={p} className="grid gap-1.5 rounded-lg border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor={`bulk-model-${p}`} className="text-xs">
-                    {cfg.label} · {grouped.buckets[p].length} key{grouped.buckets[p].length === 1 ? "" : "s"}
-                  </Label>
-                  {p === "openrouter" && loadingFree && (
-                    <Loader2Icon className="size-3 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-                <Input
-                  id={`bulk-model-${p}`}
-                  value={models[p]}
-                  onChange={(e) => setModels((prev) => ({ ...prev, [p]: e.target.value }))}
-                  placeholder={cfg.freeModel}
-                  list={modelOptions.length > 0 ? listId : undefined}
-                  className="font-mono"
-                />
-                {modelOptions.length > 0 && (
-                  <datalist id={listId}>
-                    {modelOptions.map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
-                )}
-                <p className="text-muted-foreground text-xs">{cfg.hint}</p>
-              </div>
-            );
-          })}
+          <div className="grid gap-1.5 rounded-lg border p-3">
+            <Label htmlFor="bulk-model" className="text-xs">
+              Model
+            </Label>
+            <Input
+              id="bulk-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={PROVIDER.defaultModel}
+              list="deploy-models"
+              className="font-mono"
+            />
+            <datalist id="deploy-models">
+              {PROVIDER.models.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            <p className="text-muted-foreground text-xs">
+              Both models support tool calling. They think before answering, so keep the output cap generous (≈900+).
+            </p>
+          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={() => void importKeys()} disabled={busy || total === 0}>
+          <Button onClick={() => void importKeys()} disabled={busy || keys.length === 0}>
             {busy && <Loader2Icon className="animate-spin" />}
-            Add {total > 0 ? total : ""} key{total === 1 ? "" : "s"}
+            Add {keys.length > 0 ? keys.length : ""} key{keys.length === 1 ? "" : "s"}
           </Button>
         </DialogFooter>
       </DialogContent>
