@@ -70,6 +70,7 @@ export const sidebarItems: NavGroup[] = [
     items: [
       { id: "dashboard", title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
       { id: "chat", title: "Chat", url: "/chat", icon: MessageSquare },
+      { id: "liquid-decisions", title: "Liquid Decisions", url: "/function/decisions", icon: Sparkles },
       { id: "workflows", title: "Workflow", url: "/function/workflows", icon: Workflow },
       { id: "connections", title: "Connections", url: "/function/connections", icon: Plug },
       { id: "browser", title: "Live Browser", url: "/function/browser", icon: MonitorPlay },

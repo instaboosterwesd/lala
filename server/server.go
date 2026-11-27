@@ -921,9 +921,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/llm/retry-policy", s.pgSaveLLMRetryPolicy)
 	// ChatGPT subscription sign-in (device code); see server/chatgpt.go
 	mux.HandleFunc("GET /api/chatgpt/status", s.pgChatGPTStatus)
+	mux.HandleFunc("GET /api/chatgpt/models", s.pgChatGPTModels)
+	mux.HandleFunc("POST /api/chatgpt/model", s.pgChatGPTSetModel)
 	mux.HandleFunc("POST /api/chatgpt/device/start", s.pgChatGPTStart)
 	mux.HandleFunc("POST /api/chatgpt/device/poll", s.pgChatGPTPoll)
 	mux.HandleFunc("POST /api/chatgpt/disconnect", s.pgChatGPTDisconnect)
+	// Liquid AI's typed decision endpoint (separate from chat-completion models).
+	mux.HandleFunc("GET /api/liquid/decision-models", s.liquidDecisionModels)
+	mux.HandleFunc("POST /api/liquid/decisions", s.liquidDecisionRun)
 	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
 	mux.HandleFunc("POST /api/llm/pool/reset", s.pgLLMPoolReset)
 	mux.HandleFunc("POST /api/llm/models", s.pgListModels)

@@ -10,13 +10,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
-import type { ChatGPTDeviceCode, ChatGPTStatus } from "@/lib/types";
+import type { ChatGPTDeviceCode, ChatGPTModel, ChatGPTStatus } from "@/lib/types";
 
 // ChatGPT sign-in, Codex-style: the server asks OpenAI for a one-time code, the
 // user approves it at auth.openai.com, and this card polls until the account is
 // connected — no API key is ever typed or pasted.
 export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
   const [status, setStatus] = React.useState<ChatGPTStatus | null>(null);
+  const [models, setModels] = React.useState<ChatGPTModel[]>([]);
+  const [loadingModels, setLoadingModels] = React.useState(false);
+  const [savingModel, setSavingModel] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const [disconnecting, setDisconnecting] = React.useState(false);
   const [code, setCode] = React.useState<ChatGPTDeviceCode | null>(null);
@@ -24,7 +27,26 @@ export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
 
   const reload = React.useCallback(async () => {
     try {
-      setStatus(await api.chatGPTStatus());
+      const next = await api.chatGPTStatus();
+      setStatus(next);
+      if (next.connected) {
+        setLoadingModels(true);
+        try {
+          const available = await api.chatGPTModels();
+          setModels(available);
+          if (available.length > 0 && !available.some((model) => model.id === next.model)) {
+            await api.chatGPTSetModel(available[0].id);
+            setStatus({ ...next, model: available[0].id });
+          }
+        } catch (e) {
+          setModels([]);
+          toast.error(`Could not load ChatGPT models: ${(e as Error).message}`);
+        } finally {
+          setLoadingModels(false);
+        }
+      } else {
+        setModels([]);
+      }
     } catch {
       /* the card simply stays in its loading state */
     }
@@ -81,6 +103,7 @@ export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
           setCode(null);
           setStatus(r);
           toast.success(r.email ? `Connected as ${r.email}` : "ChatGPT connected");
+          void reload();
           onChanged?.();
         }
       } catch (e) {
@@ -93,7 +116,7 @@ export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [code, onChanged]);
+  }, [code, onChanged, reload]);
 
   async function disconnect() {
     setDisconnecting(true);
@@ -106,6 +129,21 @@ export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
       toast.error(`Disconnect failed: ${(e as Error).message}`);
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function chooseModel(model: string) {
+    if (!model || model === status?.model) return;
+    setSavingModel(true);
+    try {
+      await api.chatGPTSetModel(model);
+      setStatus((current) => current ? { ...current, model } : current);
+      toast.success(`Model changed to ${models.find((item) => item.id === model)?.name ?? model}`);
+      onChanged?.();
+    } catch (e) {
+      toast.error(`Could not change model: ${(e as Error).message}`);
+    } finally {
+      setSavingModel(false);
     }
   }
 
@@ -160,6 +198,26 @@ export function ChatGPTConnect({ onChanged }: { onChanged?: () => void }) {
               </Button>
             )}
           </div>
+          {connected && (
+            <div className="flex w-full flex-wrap items-center gap-2 border-t pt-3">
+              <label htmlFor="chatgpt-model" className="text-muted-foreground text-xs">Subscription model</label>
+              <select
+                id="chatgpt-model"
+                value={status?.model ?? ""}
+                onChange={(event) => void chooseModel(event.target.value)}
+                disabled={loadingModels || savingModel || models.length === 0}
+                className="h-9 min-w-56 rounded-md border bg-background px-3 text-sm"
+              >
+                {loadingModels && <option value="">Loading available models…</option>}
+                {!loadingModels && models.length === 0 && <option value="">No models available</option>}
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>{model.name}</option>
+                ))}
+              </select>
+              {savingModel && <Loader2Icon className="size-4 animate-spin text-muted-foreground" />}
+              <span className="text-muted-foreground text-xs">Only models available to your account are listed.</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 

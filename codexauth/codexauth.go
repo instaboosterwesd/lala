@@ -36,8 +36,9 @@ const (
 	// BaseURL is the Responses endpoint family that accepts a ChatGPT access
 	// token; profiles point their base_url here (the provider appends /responses).
 	BaseURL = "https://chatgpt.com/backend-api/codex"
-	// DefaultModel is what Codex itself uses for the subscription backend.
-	DefaultModel = "gpt-5-codex"
+	// DefaultModel is the first-choice Codex model; the actual account model
+	// catalogue is fetched from the authenticated backend before selection.
+	DefaultModel = "gpt-6.2-sol"
 
 	settingKey = "chatgpt.oauth"
 	// refreshSkew keeps a request from racing an expiry: refresh this long before.
@@ -62,6 +63,12 @@ type DeviceCode struct {
 	VerificationURL string    `json:"verification_url"`
 	Interval        int       `json:"interval"`
 	ExpiresAt       time.Time `json:"expires_at"`
+}
+
+// Model is a model the signed-in account can select from the Codex backend.
+type Model struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
 }
 
 // ErrNotConnected means no ChatGPT account is signed in.
@@ -165,6 +172,62 @@ func (s *Store) AccessToken(ctx context.Context) (string, string, error) {
 		return "", "", err
 	}
 	return refreshed.AccessToken, refreshed.AccountID, nil
+}
+
+// Models fetches the model catalogue available to this ChatGPT account.
+func (s *Store) Models(ctx context.Context) ([]Model, error) {
+	token, accountID, err := s.AccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u, _ := url.Parse(BaseURL + "/models")
+	q := u.Query()
+	q.Set("client_version", "0.0.1")
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("chatgpt-account-id", accountID)
+	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.0.1")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("chatgpt: model catalogue failed: HTTP %d: %s", resp.StatusCode, clip(raw))
+	}
+	var catalog struct {
+		Models []struct {
+			Slug          string `json:"slug"`
+			DisplayName   string `json:"display_name"`
+			Visibility    string `json:"visibility"`
+			SupportedInAPI bool  `json:"supported_in_api"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return nil, fmt.Errorf("chatgpt: decode model catalogue: %w", err)
+	}
+	models := make([]Model, 0, len(catalog.Models))
+	for _, model := range catalog.Models {
+		if model.Slug == "" || model.Visibility != "list" || !model.SupportedInAPI {
+			continue
+		}
+		name := model.DisplayName
+		if name == "" {
+			name = model.Slug
+		}
+		models = append(models, Model{ID: model.Slug, Name: name})
+	}
+	if len(models) == 0 {
+		return nil, errors.New("chatgpt: account returned no selectable models")
+	}
+	return models, nil
 }
 
 // refreshLocked posts the refresh grant. Codex sends JSON here (not the

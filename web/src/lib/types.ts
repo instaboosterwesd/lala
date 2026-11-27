@@ -1053,12 +1053,24 @@ export interface ChatGPTStatus {
   plan?: string;
   account_id?: string;
   expires_at?: string;
-  profile_id?: string;
+  profile_id?: string | number;
   profile_name?: string;
   model?: string;
   base_url?: string;
   // Poll responses: "pending" while the code is unapproved, "connected" once done.
   status?: "pending" | "connected" | string;
+}
+
+export interface ChatGPTModel {
+  id: string;
+  name: string;
+}
+
+export interface LiquidDecisionModel {
+  name: string;
+  description?: string;
+  release_date?: string;
+  input_modalities?: string[];
 }
 
 export interface ChatGPTDeviceCode {

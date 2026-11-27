@@ -23,6 +23,7 @@ import type {
   BatchControlItem,
   ChatAttachment,
   ChatGPTDeviceCode,
+  ChatGPTModel,
   ChatGPTStatus,
   CommandRecord,
   Company,
@@ -63,6 +64,7 @@ import type {
   LLMRecordDetail,
   LLMRecordItem,
   LLMRetryOverride,
+  LiquidDecisionModel,
   LLMRetryPolicy,
   LLMTask,
   MCPServer,
@@ -969,6 +971,8 @@ export const api = {
   // ChatGPT subscription sign-in (device code): status, start a login, poll it,
   // disconnect. Connecting also creates/activates the ChatGPT LLM profile.
   chatGPTStatus: () => get<ChatGPTStatus>("/chatgpt/status"),
+  chatGPTModels: () => get<{ models: ChatGPTModel[] }>("/chatgpt/models").then((r) => arr(r.models)),
+  chatGPTSetModel: (model: string) => post<{ ok: boolean; model: string }>("/chatgpt/model", { model }),
   chatGPTStart: () => post<ChatGPTDeviceCode>("/chatgpt/device/start", {}),
   chatGPTPoll: (deviceAuthID: string, userCode: string) =>
     post<ChatGPTStatus & { status?: string }>("/chatgpt/device/poll", {
@@ -976,6 +980,12 @@ export const api = {
       user_code: userCode,
     }),
   chatGPTDisconnect: () => post<{ ok: boolean }>("/chatgpt/disconnect", {}),
+  liquidDecisionModels: () => get<{ models: LiquidDecisionModel[] }>("/liquid/decision-models").then((r) => arr(r.models)),
+  liquidDecide: (input: {
+    model: string;
+    state: string;
+    questions: Record<string, { type: "choice" | "score" | "noul"; instructions: string; criteria?: Record<string, string> | string[] }>;
+  }) => post<Record<string, unknown>>("/liquid/decisions", input),
   saveLLMProfile: (p: {
     id?: number; // omit/0 = create; set = update that profile
     name: string;
