@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { KeyRoundIcon, Loader2Icon } from "lucide-react";
+import { ExternalLinkIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,8 @@ const PROVIDERS = {
     baseUrl: "https://openrouter.ai/api/v1",
     freeModel: "inclusionai/ling-3.2-flash:free",
     prefixes: ["sk-or-"],
+    keysUrl: "https://openrouter.ai/keys",
+    freeModels: [] as string[],
     hint: "Free models are the ones priced at 0 on OpenRouter (…:free).",
   },
   "google-ai-studio": {
@@ -35,13 +37,39 @@ const PROVIDERS = {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     freeModel: "gemini-2.5-flash",
     prefixes: ["AIza"],
+    keysUrl: "https://aistudio.google.com/apikey",
+    freeModels: [] as string[],
     hint: "gemini-2.5-flash is on the free tier of the AI Studio API.",
+  },
+  requesty: {
+    label: "Requesty",
+    baseUrl: "https://router.requesty.ai/v1",
+    // The free tier is these five models; every other Requesty model needs credit.
+    freeModel: "nvidia/nemotron-3-ultra-550b-a55b",
+    prefixes: ["rqsty-"],
+    keysUrl: "https://app.requesty.ai/api-keys",
+    freeModels: [
+      "nvidia/nemotron-3-ultra-550b-a55b",
+      "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "google/gemma-4-31b-it",
+      "nvidia/muse-glimmer-30b",
+    ],
+    hint: "These five models cost $0. They think first, so a small output cap only returns reasoning — keep the cap generous (≈900+).",
   },
 } as const;
 
 type ProviderKey = keyof typeof PROVIDERS;
 
 const PROVIDER_KEYS = Object.keys(PROVIDERS) as ProviderKey[];
+
+// Per-provider state maps, built from the list so adding a provider never needs a second edit.
+const defaultModels = (): Record<ProviderKey, string> =>
+  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, PROVIDERS[p].freeModel])) as Record<ProviderKey, string>;
+const emptyBuckets = (): Record<ProviderKey, string[]> =>
+  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, [] as string[]])) as Record<ProviderKey, string[]>;
+const zeroCounters = (): Record<ProviderKey, number> =>
+  Object.fromEntries(PROVIDER_KEYS.map((p) => [p, 1])) as Record<ProviderKey, number>;
 
 // A pasted key is routed by its prefix, so one box can take OpenRouter and AI Studio keys
 // mixed together. Anything unrecognised is reported instead of being saved as a broken
@@ -121,10 +149,7 @@ export function BulkKeysDialog({
   onSaved: () => Promise<void> | void;
 }) {
   const [raw, setRaw] = React.useState("");
-  const [models, setModels] = React.useState<Record<ProviderKey, string>>({
-    openrouter: PROVIDERS.openrouter.freeModel,
-    "google-ai-studio": PROVIDERS["google-ai-studio"].freeModel,
-  });
+  const [models, setModels] = React.useState<Record<ProviderKey, string>>(defaultModels);
   const [freeModels, setFreeModels] = React.useState<FreeModel[]>([]);
   const [loadingFree, setLoadingFree] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -133,10 +158,7 @@ export function BulkKeysDialog({
   React.useEffect(() => {
     if (!open) return;
     setRaw("");
-    setModels({
-      openrouter: PROVIDERS.openrouter.freeModel,
-      "google-ai-studio": PROVIDERS["google-ai-studio"].freeModel,
-    });
+    setModels(defaultModels());
     setBusy(false);
     setLoadingFree(true);
     fetchOpenRouterFreeModels()
@@ -155,7 +177,7 @@ export function BulkKeysDialog({
 
   // One bucket per provider, filled in paste order, plus the keys we could not place.
   const grouped = React.useMemo(() => {
-    const buckets: Record<ProviderKey, string[]> = { openrouter: [], "google-ai-studio": [] };
+    const buckets = emptyBuckets();
     const unknown: string[] = [];
     keys.forEach((key, i) => {
       const p = detectProvider(key);
@@ -184,7 +206,7 @@ export function BulkKeysDialog({
       }
       order.sort((a, b) => a.idx - b.idx);
 
-      const counters: Record<ProviderKey, number> = { openrouter: 1, "google-ai-studio": 1 };
+      const counters = zeroCounters();
       for (const item of order) {
         const cfg = PROVIDERS[item.provider];
         const model = models[item.provider].trim() || cfg.freeModel;
@@ -266,28 +288,40 @@ export function BulkKeysDialog({
         </DialogHeader>
 
         <div className="grid gap-3">
+          {/* One click to the provider's own key page: the user can mint a fresh key without
+              leaving the dialog, then paste it in the box below. */}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-2.5">
+            <span className="text-muted-foreground text-xs">Need a key?</span>
+            {PROVIDER_KEYS.map((p) => (
+              <Button key={p} asChild size="sm" variant="outline">
+                <a href={PROVIDERS[p].keysUrl} target="_blank" rel="noreferrer">
+                  {PROVIDERS[p].label} <ExternalLinkIcon />
+                </a>
+              </Button>
+            ))}
+          </div>
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
               <Label htmlFor="bulk-keys">API keys</Label>
               <span className="text-muted-foreground text-xs">
                 {total > 0
                   ? `${total} detected${detected.length > 0 ? ` · ${detected.map((p) => `${PROVIDERS[p].label} ${grouped.buckets[p].length}`).join(", ")}` : ""}`
-                  : "paste OpenRouter (sk-or-…) and AI Studio (AIza…) keys together"}
+                  : "paste OpenRouter (sk-or-…), AI Studio (AIza…) and Requesty (rqsty-…) keys together"}
               </span>
             </div>
             <Textarea
               id="bulk-keys"
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
-              placeholder={"One key per line — mixing providers is fine\nsk-or-v1-…\nAIza…"}
+              placeholder={"One key per line — mixing providers is fine\nsk-or-v1-…\nAIza…\nrqsty-sk-…"}
               className="min-h-32 font-mono text-xs"
               spellCheck={false}
               autoComplete="off"
             />
             {grouped.unknown.length > 0 && (
               <p className="text-destructive text-xs">
-                {grouped.unknown.length} key{grouped.unknown.length === 1 ? "" : "s"} not recognised (expected sk-or-…
-                or AIza…): {grouped.unknown.slice(0, 2).join(", ")}
+                {grouped.unknown.length} key{grouped.unknown.length === 1 ? "" : "s"} not recognised (expected sk-or-…,
+                AIza… or rqsty-…): {grouped.unknown.slice(0, 2).join(", ")}
                 {grouped.unknown.length > 2 ? "…" : ""}
               </p>
             )}
@@ -296,6 +330,9 @@ export function BulkKeysDialog({
           {detected.map((p) => {
             const cfg = PROVIDERS[p];
             const listId = `free-models-${p}`;
+            // OpenRouter's catalogue is live-fetched; the static list is the fallback there and
+            // the whole story for Requesty.
+            const modelOptions = p === "openrouter" && freeModels.length > 0 ? freeModels.map((m) => m.id) : cfg.freeModels;
             return (
               <div key={p} className="grid gap-1.5 rounded-lg border p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -311,15 +348,13 @@ export function BulkKeysDialog({
                   value={models[p]}
                   onChange={(e) => setModels((prev) => ({ ...prev, [p]: e.target.value }))}
                   placeholder={cfg.freeModel}
-                  list={p === "openrouter" && freeModels.length > 0 ? listId : undefined}
+                  list={modelOptions.length > 0 ? listId : undefined}
                   className="font-mono"
                 />
-                {p === "openrouter" && freeModels.length > 0 && (
+                {modelOptions.length > 0 && (
                   <datalist id={listId}>
-                    {freeModels.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.ctx > 0 ? `${Math.round(m.ctx / 1000)}K ctx` : ""}
-                      </option>
+                    {modelOptions.map((m) => (
+                      <option key={m} value={m} />
                     ))}
                   </datalist>
                 )}
